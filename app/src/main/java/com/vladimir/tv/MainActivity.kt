@@ -22,6 +22,8 @@ import android.widget.*
 import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import com.bumptech.glide.Glide
+import com.bumptech.glide.load.engine.DiskCacheStrategy
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -31,6 +33,11 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.URL
 import java.util.UUID
+import java.net.URLEncoder
+import android.content.pm.ActivityInfo
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import android.text.format.DateFormat
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.MultiFormatWriter
 import kotlin.concurrent.thread
@@ -42,7 +49,8 @@ class MainActivity : Activity() {
         val url: String,
         val group: String,
         val logo: String = "",
-        val type: String = "tv"
+        val type: String = "tv",
+        val epgId: String = ""
     )
 
     private val prefs by lazy {
@@ -52,6 +60,7 @@ class MainActivity : Activity() {
     private val items = mutableListOf<Entry>()
     private val vodItems = mutableListOf<Entry>()
     private var currentEntry: Entry? = null
+    private val epgNow = mutableMapOf<String, String>()
     private val clockHandler = Handler(Looper.getMainLooper())
     private val lists = mutableListOf<Pair<String, String>>()
 
@@ -126,6 +135,11 @@ class MainActivity : Activity() {
         )
 
         player = ExoPlayer.Builder(this).build()
+        player?.addListener(object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                runOnUiThread { toast(tr("Ошибка воспроизведения: ", "Wiedergabefehler: ", "Playback error: ") + error.errorCodeName) }
+            }
+        })
 
         startRemoteServer()
         showHome()
@@ -134,6 +148,8 @@ class MainActivity : Activity() {
             loadPlaylist(activeList)
         }
         loadVodPlaylist()
+        loadEpg()
+        if (prefs.getString("xtream_server", "").orEmpty().isNotBlank()) loadXtream()
     }
 
     private fun saveLists() {
@@ -187,7 +203,27 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             background = background(panel)
             isFocusable = true
+            setOnFocusChangeListener { _, hasFocus ->
+                background = background(if (hasFocus) accent else panel)
+            }
             setOnClickListener { action() }
+        }
+
+    private fun artwork(url: String, width: Int, height: Int): ImageView =
+        ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(width), dp(height)).apply {
+                marginEnd = dp(10)
+            }
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(Color.rgb(35, 45, 63))
+            contentDescription = tr("Изображение канала или фильма", "Sender- oder Filmbild", "Channel or movie artwork")
+            if (url.startsWith("https://") || url.startsWith("http://")) {
+                Glide.with(this@MainActivity).load(url)
+                    .diskCacheStrategy(DiskCacheStrategy.AUTOMATIC)
+                    .centerInside().into(this)
+            } else {
+                setImageResource(android.R.drawable.ic_menu_gallery)
+            }
         }
 
     private fun sectionTitle(value: String) {
@@ -571,8 +607,13 @@ class MainActivity : Activity() {
                         orientation = LinearLayout.HORIZONTAL
                     }
 
+                    row.gravity = Gravity.CENTER_VERTICAL
+                    if (prefs.getBoolean("show_artwork", true)) {
+                        row.addView(artwork(entry.logo, if (type == "movies") 66 else 78, if (type == "movies") 94 else 58))
+                    }
+                    val guide = epgNow[entry.epgId.ifBlank { entry.title }] ?: ""
                     row.addView(
-                        button("▶ ${entry.title}") {
+                        button("▶ ${entry.title}" + if (guide.isNotBlank() && type != "movies") "  •  $guide" else "") {
                             play(entry)
                         },
                         LinearLayout.LayoutParams(
@@ -800,8 +841,8 @@ class MainActivity : Activity() {
 
                 runOnUiThread {
                     if (index == activeList) {
-                        items.clear()
-                        items.addAll(parsed)
+                        items.removeAll { it.url !in parsed.map { entry -> entry.url } && !it.url.contains("/live/") }
+                        items.addAll(parsed.filter { entry -> items.none { it.url == entry.url } })
                         toast("${parsed.size} items")
                         showHome()
                     }
@@ -820,6 +861,7 @@ class MainActivity : Activity() {
         var title = ""
         var group = ""
         var logo = ""
+        var epgId = ""
 
         val attributes = Regex(
             "([\\w-]+)=\"([^\"]*)\""
@@ -839,6 +881,7 @@ class MainActivity : Activity() {
 
                 group = attrs["group-title"] ?: "Other"
                 logo = attrs["tvg-logo"] ?: ""
+                epgId = attrs["tvg-id"] ?: ""
 
             } else if (
                 line.startsWith("http://") ||
@@ -853,13 +896,15 @@ class MainActivity : Activity() {
                         line,
                         group.ifBlank { "Other" },
                         logo,
-                        type
+                        type,
+                        epgId
                     )
                 )
 
                 title = ""
                 group = ""
                 logo = ""
+                epgId = ""
             }
         }
 
@@ -868,6 +913,7 @@ class MainActivity : Activity() {
 
     private fun play(entry: Entry) {
         currentEntry = entry
+        requestedOrientation = if (isPhone()) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         prefs.edit().putString("recent", entry.url).apply()
         current = "player"
         window.decorView.systemUiVisibility =
@@ -877,6 +923,7 @@ class MainActivity : Activity() {
         val frame = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         val view = PlayerView(this).apply {
             useController = true
+            controllerAutoShow = false
             isFocusable = true
             isFocusableInTouchMode = true
             resizeMode = when (prefs.getString("video_scale", "fit")) {
@@ -891,6 +938,8 @@ class MainActivity : Activity() {
                 when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
                     KeyEvent.KEYCODE_MENU -> { showChannelOverlay(); true }
+                    KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_MEDIA_NEXT -> { changeChannel(1); true }
+                    KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_MEDIA_PREVIOUS -> { changeChannel(-1); true }
                     else -> false
                 }
             }
@@ -899,6 +948,15 @@ class MainActivity : Activity() {
         frame.addView(view, FrameLayout.LayoutParams(-1, -1))
         val channelButton = button(tr("Каналы", "Sender", "Channels")) { showChannelOverlay() }
         frame.addView(channelButton, FrameLayout.LayoutParams(dp(155), dp(55), Gravity.TOP or Gravity.END))
+        if (prefs.getBoolean("show_clock", true)) {
+            val clock = android.widget.TextClock(this).apply {
+                format24Hour = "HH:mm"; format12Hour = "hh:mm a"
+                setTextColor(Color.WHITE); textSize = 19f
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                setBackgroundColor(0x99000000.toInt())
+            }
+            frame.addView(clock, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
+        }
         setContentView(frame)
         view.requestFocus()
         try {
@@ -906,6 +964,13 @@ class MainActivity : Activity() {
             player?.prepare()
             player?.play()
         } catch (e: Exception) { toast(e.message ?: "Playback error") }
+    }
+
+    private fun changeChannel(direction: Int) {
+        val channels = items.filter { it.type == "tv" }
+        if (channels.isEmpty()) return
+        val index = channels.indexOfFirst { it.url == currentEntry?.url }
+        play(channels[(index + direction + channels.size) % channels.size])
     }
 
     private fun showChannelOverlay() {
@@ -940,8 +1005,8 @@ class MainActivity : Activity() {
                 conn.disconnect()
                 val parsed = parseM3u(raw).map { it.copy(type = "movies") }
                 runOnUiThread {
-                    vodItems.clear()
-                    vodItems.addAll(parsed)
+                    vodItems.removeAll { it.url !in parsed.map { entry -> entry.url } && !it.url.contains("/movie/") }
+                    vodItems.addAll(parsed.filter { entry -> vodItems.none { it.url == entry.url } })
                     if (current == "movies") showCatalog("movies")
                 }
             } catch (e: Exception) { runOnUiThread { toast("VOD: ${e.message}") } }
@@ -1024,9 +1089,24 @@ class MainActivity : Activity() {
             }
         )
 
+        content.addView(button(tr("Xtream Codes: сервер и доступ", "Xtream Codes: Server und Zugang", "Xtream Codes: server and login")) { editXtream() })
+        content.addView(button(tr("EPG: адрес XMLTV", "EPG: XMLTV-Adresse", "EPG: XMLTV URL")) { editEpg() })
+        content.addView(button(tr("Обновить ТВ и видеотеку", "TV und Mediathek aktualisieren", "Refresh TV and library")) {
+            if (activeList in lists.indices) loadPlaylist(activeList)
+            loadVodPlaylist()
+            loadXtream()
+            loadEpg()
+        })
         content.addView(
             button(tr("Отдельная ссылка видеотеки", "Separate Mediathek-URL", "Separate video library URL")) {
                 editVodUrl()
+            }
+        )
+        content.addView(
+            button(tr("Логотипы и постеры: вкл. / выкл.", "Logos und Poster: ein / aus", "Logos and posters: on / off")) {
+                val enabled = prefs.getBoolean("show_artwork", true)
+                prefs.edit().putBoolean("show_artwork", !enabled).apply()
+                showSettings()
             }
         )
         content.addView(
@@ -1049,6 +1129,153 @@ class MainActivity : Activity() {
                 showRemote()
             }
         )
+    }
+
+    private fun editXtream() {
+        val wrapper = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), dp(8)) }
+        fun field(hint: String, key: String, secret: Boolean = false): EditText = EditText(this).apply {
+            this.hint = hint
+            setSingleLine(true)
+            setText(prefs.getString(key, ""))
+            if (secret) inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            wrapper.addView(this)
+        }
+        val server = field(tr("Сервер https://...", "Server https://...", "Server https://..."), "xtream_server")
+        val user = field(tr("Логин", "Benutzername", "Username"), "xtream_user")
+        val pass = field(tr("Пароль", "Passwort", "Password"), "xtream_pass", true)
+        AlertDialog.Builder(this).setTitle("Xtream Codes").setView(wrapper)
+            .setPositiveButton(tr("Сохранить", "Speichern", "Save")) { _, _ ->
+                val host = server.text.toString().trim().trimEnd('/')
+                if (host.isNotBlank() && !host.startsWith("http://") && !host.startsWith("https://")) {
+                    toast(tr("Нужен адрес HTTP(S)", "HTTP(S)-Adresse erforderlich", "HTTP(S) address required"))
+                } else {
+                    prefs.edit().putString("xtream_server", host).putString("xtream_user", user.text.toString().trim())
+                        .putString("xtream_pass", pass.text.toString()).apply()
+                    if (host.isNotBlank()) loadXtream()
+                }
+            }.setNegativeButton(tr("Отмена", "Abbrechen", "Cancel"), null).show()
+    }
+
+    private fun loadXtream() {
+        val server = prefs.getString("xtream_server", "").orEmpty().trimEnd('/')
+        val user = prefs.getString("xtream_user", "").orEmpty()
+        val pass = prefs.getString("xtream_pass", "").orEmpty()
+        if (server.isBlank() || user.isBlank() || pass.isBlank()) return
+        thread {
+            try {
+                fun encode(s: String) = URLEncoder.encode(s, "UTF-8")
+                val query = "username=${encode(user)}&password=${encode(pass)}"
+                fun fetch(action: String): JSONArray {
+                    val url = URL("$server/player_api.php?$query&action=$action")
+                    val c = url.openConnection() as HttpURLConnection
+                    c.connectTimeout = 15000; c.readTimeout = 30000
+                    try { return JSONArray(c.inputStream.bufferedReader().use { it.readText() }) }
+                    finally { c.disconnect() }
+                }
+                val liveGroups = mutableMapOf<String, String>()
+                val vodGroups = mutableMapOf<String, String>()
+                fun categories(action: String, target: MutableMap<String, String>) {
+                    val array = fetch(action)
+                    for (i in 0 until array.length()) {
+                        val obj = array.getJSONObject(i)
+                        target[obj.optString("category_id")] = obj.optString("category_name", "Other")
+                    }
+                }
+                categories("get_live_categories", liveGroups)
+                categories("get_vod_categories", vodGroups)
+                val live = mutableListOf<Entry>()
+                val streams = fetch("get_live_streams")
+                for (i in 0 until streams.length()) {
+                    val o = streams.getJSONObject(i)
+                    val id = o.optString("stream_id")
+                    if (id.isNotBlank()) live.add(Entry(o.optString("name", "TV"),
+                        "$server/live/${encode(user)}/${encode(pass)}/$id.ts",
+                        liveGroups[o.optString("category_id")] ?: "Other", o.optString("stream_icon"), "tv", o.optString("epg_channel_id")))
+                }
+                val films = mutableListOf<Entry>()
+                val vod = fetch("get_vod_streams")
+                for (i in 0 until vod.length()) {
+                    val o = vod.getJSONObject(i)
+                    val id = o.optString("stream_id")
+                    if (id.isNotBlank()) films.add(Entry(o.optString("name", "Movie"),
+                        "$server/movie/${encode(user)}/${encode(pass)}/$id.${o.optString("container_extension", "mp4")}",
+                        vodGroups[o.optString("category_id")] ?: "Other", o.optString("stream_icon"), "movies"))
+                }
+                runOnUiThread {
+                    // Xtream is an additional source; do not silently overwrite M3U content.
+                    items.removeAll { it.url.startsWith("$server/live/") }
+                    vodItems.removeAll { it.url.startsWith("$server/movie/") }
+                    items.addAll(live); vodItems.addAll(films)
+                    toast("Xtream: ${live.size} TV / ${films.size} VOD")
+                    if (current != "player") showHome()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { toast("Xtream: ${e.message ?: "Connection error"}") }
+            }
+        }
+    }
+
+    private fun editEpg() {
+        val field = EditText(this).apply {
+            hint = "https://.../epg.xml"; setSingleLine(true)
+            setText(prefs.getString("epg_url", ""))
+        }
+        AlertDialog.Builder(this).setTitle("XMLTV EPG").setView(field)
+            .setPositiveButton(tr("Сохранить", "Speichern", "Save")) { _, _ ->
+                val address = field.text.toString().trim()
+                if (address.isEmpty() || address.startsWith("http://") || address.startsWith("https://")) {
+                    prefs.edit().putString("epg_url", address).apply(); loadEpg()
+                } else toast("HTTP(S) URL required")
+            }.setNegativeButton(tr("Отмена", "Abbrechen", "Cancel"), null).show()
+    }
+
+    private fun loadEpg() {
+        val address = prefs.getString("epg_url", "").orEmpty()
+        if (address.isBlank()) return
+        thread {
+            try {
+                val conn = URL(address).openConnection() as HttpURLConnection
+                conn.connectTimeout = 15000; conn.readTimeout = 30000
+                val result = mutableMapOf<String, String>()
+                val now = System.currentTimeMillis()
+                try {
+                    val factory = javax.xml.parsers.SAXParserFactory.newInstance()
+                    factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+                    factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
+                    factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+                    val parser = factory.newSAXParser()
+                    val source = if (address.lowercase().endsWith(".gz") || conn.contentEncoding.equals("gzip", true))
+                        java.util.zip.GZIPInputStream(conn.inputStream) else conn.inputStream
+                    parser.parse(source, object : org.xml.sax.helpers.DefaultHandler() {
+                        var channel = ""; var start = 0L; var stop = 0L
+                        var insideTitle = false; val title = StringBuilder()
+                        fun xmlTime(value: String): Long {
+                            val compact = value.trim().take(14)
+                            return try {
+                                val fmt = java.text.SimpleDateFormat("yyyyMMddHHmmss", java.util.Locale.US)
+                                val offset = value.trim().substringAfter(' ', "+0000")
+                                fmt.timeZone = java.util.TimeZone.getTimeZone("GMT$offset")
+                                fmt.parse(compact)?.time ?: 0L
+                            } catch (_: Exception) { 0L }
+                        }
+                        override fun startElement(uri: String?, localName: String?, qName: String?, attrs: org.xml.sax.Attributes) {
+                            when (qName) {
+                                "programme" -> { channel = attrs.getValue("channel") ?: ""; start = xmlTime(attrs.getValue("start") ?: ""); stop = xmlTime(attrs.getValue("stop") ?: "") }
+                                "title" -> { insideTitle = true; title.setLength(0) }
+                            }
+                        }
+                        override fun characters(ch: CharArray, startIndex: Int, length: Int) {
+                            if (insideTitle) title.append(ch, startIndex, length)
+                        }
+                        override fun endElement(uri: String?, localName: String?, qName: String?) {
+                            if (qName == "title") insideTitle = false
+                            if (qName == "programme" && now in start until stop && channel.isNotBlank()) result[channel] = title.toString()
+                        }
+                    })
+                } finally { conn.disconnect() }
+                runOnUiThread { epgNow.clear(); epgNow.putAll(result); if (current == "tv") showCatalog("tv") }
+            } catch (e: Exception) { runOnUiThread { toast("EPG: ${e.message}") } }
+        }
     }
 
     private fun localIp(): String? {
@@ -1389,6 +1616,7 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (current == "player") {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             player?.pause()
             showCatalog(currentEntry?.type ?: "tv")
         } else {
