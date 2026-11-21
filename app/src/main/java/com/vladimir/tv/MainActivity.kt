@@ -60,7 +60,12 @@ class MainActivity : Activity() {
     private val items = mutableListOf<Entry>()
     private val vodItems = mutableListOf<Entry>()
     private var currentEntry: Entry? = null
+    data class Programme(val channel: String, val start: Long, val stop: Long, val title: String, val description: String)
     private val epgNow = mutableMapOf<String, String>()
+    private val epgSchedule = mutableMapOf<String, MutableList<Programme>>()
+    private val epgChannelNames = mutableMapOf<String, String>()
+    private var playerFrame: FrameLayout? = null
+    private var sidePanel: View? = null
     private val clockHandler = Handler(Looper.getMainLooper())
     private val lists = mutableListOf<Pair<String, String>>()
 
@@ -83,7 +88,14 @@ class MainActivity : Activity() {
 
     private val bg = Color.rgb(12, 17, 29)
     private val panel = Color.rgb(28, 36, 53)
-    private val accent = Color.rgb(229, 35, 66)
+    private val accent: Int
+        get() = when (prefs.getString("theme", "blue")) {
+            "red" -> Color.rgb(229, 35, 66)
+            "green" -> Color.rgb(34, 171, 111)
+            "purple" -> Color.rgb(148, 90, 222)
+            "gold" -> Color.rgb(211, 155, 50)
+            else -> Color.rgb(48, 124, 232)
+        }
 
     private fun dp(value: Int): Int =
         (value * resources.displayMetrics.density).toInt()
@@ -277,7 +289,7 @@ class MainActivity : Activity() {
         }
 
         header.addView(
-            label("VladiMir TV 3.0", 26f, true),
+            label("VladiMir TV 3.1", 26f, true),
             LinearLayout.LayoutParams(0, -2, 1f)
         )
 
@@ -316,23 +328,13 @@ class MainActivity : Activity() {
                 { showCatalog("tv") }
             ),
             Triple(
-                "movies",
-                tr("Фильмы", "Filme", "Movies"),
-                { showCatalog("movies") }
-            ),
-            Triple(
                 "favorites",
                 tr("Избранное", "Favoriten", "Favorites"),
                 { showCatalog("favorites") }
-            ),
-            Triple(
-                "playlists",
-                tr("Плейлисты", "Playlisten", "Playlists"),
-                { showPlaylists() }
             )
         )
 
-        menu.forEach { (id, name, action) ->
+        if (page != "settings" && page != "remote" && page != "playlists") menu.forEach { (id, name, action) ->
             val b = button(name, action)
             b.background = background(
                 if (id == page) accent else panel
@@ -381,7 +383,7 @@ class MainActivity : Activity() {
             background = GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
                 intArrayOf(
-                    Color.rgb(83, 20, 45),
+                    accent,
                     Color.rgb(21, 28, 48)
                 )
             ).apply {
@@ -389,7 +391,7 @@ class MainActivity : Activity() {
             }
         }
 
-        hero.addView(label("VLADIMIR TV", 32f, true))
+        hero.addView(label("VLADIMIR TV 3.1", 32f, true))
 
         hero.addView(
             label(
@@ -432,29 +434,15 @@ class MainActivity : Activity() {
                 "tv"
             ),
             Triple(
-                tr("ФИЛЬМЫ", "FILME", "MOVIES"),
-                tr("Видеотека", "Mediathek", "Video library"),
-                "movies"
-            ),
-            Triple(
-                tr("СЕРИАЛЫ", "SERIEN", "SERIES"),
-                tr("Сериалы", "Serien", "TV series"),
-                "series"
-            ),
-            Triple(
                 tr("ИЗБРАННОЕ", "FAVORITEN", "FAVORITES"),
                 tr("Любимые", "Favoriten", "Favorites"),
                 "favorites"
             ),
+            Triple(tr("ТЕЛЕПРОГРАММА", "PROGRAMM", "TV GUIDE"), tr("Программа передач", "Fernsehprogramm", "TV schedule"), "guide"),
             Triple(
-                tr("ПЛЕЙЛИСТЫ", "PLAYLISTEN", "PLAYLISTS"),
-                tr("Управление M3U", "M3U verwalten", "Manage M3U"),
-                "playlists"
-            ),
-            Triple(
-                tr("ТЕЛЕФОН / QR", "HANDY / QR", "PHONE / QR"),
-                tr("Управление", "Steuerung", "Remote control"),
-                "remote"
+                tr("НАСТРОЙКИ", "EINSTELLUNGEN", "SETTINGS"),
+                tr("Источники и QR", "Quellen und QR", "Sources and QR"),
+                "settings"
             )
         )
 
@@ -507,6 +495,8 @@ class MainActivity : Activity() {
         when (id) {
             "playlists" -> showPlaylists()
             "remote" -> showRemote()
+            "settings" -> showSettings()
+            "guide" -> showCatalog("tv")
             else -> showCatalog(id)
         }
     }
@@ -945,8 +935,8 @@ class MainActivity : Activity() {
                 when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
                     KeyEvent.KEYCODE_MENU -> { showChannelOverlay(); true }
-                    KeyEvent.KEYCODE_DPAD_LEFT -> { showChannelOverlay(); true }
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> { showSideGuide(); true }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> { showSideGuide(); true }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> { showChannelOverlay(); true }
                     KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_MEDIA_NEXT -> { changeChannel(1); true }
                     KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_MEDIA_PREVIOUS -> { changeChannel(-1); true }
                     else -> false
@@ -955,6 +945,20 @@ class MainActivity : Activity() {
         }
         playerView = view
         frame.addView(view, FrameLayout.LayoutParams(-1, -1))
+        playerFrame = frame
+        sidePanel = null
+        if (isPhone()) {
+            val left = View(this).apply {
+                setBackgroundColor(Color.TRANSPARENT)
+                setOnClickListener { showSideGuide() }
+            }
+            val right = View(this).apply {
+                setBackgroundColor(Color.TRANSPARENT)
+                setOnClickListener { showChannelOverlay() }
+            }
+            frame.addView(left, FrameLayout.LayoutParams(dp(42), -1, Gravity.START))
+            frame.addView(right, FrameLayout.LayoutParams(dp(42), -1, Gravity.END))
+        }
         val channelButton = button(tr("Каналы", "Sender", "Channels")) { showChannelOverlay() }
         frame.addView(channelButton, FrameLayout.LayoutParams(dp(155), dp(55), Gravity.TOP or Gravity.END))
         if (prefs.getBoolean("show_clock", true)) {
@@ -982,40 +986,110 @@ class MainActivity : Activity() {
         play(channels[(index + direction + channels.size) % channels.size])
     }
 
+    private fun closeSidePanel() {
+        sidePanel?.let { panelView -> (panelView.parent as? FrameLayout)?.removeView(panelView) }
+        sidePanel = null
+        playerView?.requestFocus()
+    }
+
+    private fun openPanel(left: Boolean, heading: String, fill: (LinearLayout) -> Unit) {
+        val frame = playerFrame ?: return
+        closeSidePanel()
+        val panelWidth = (resources.displayMetrics.widthPixels * 0.42f).toInt()
+            .coerceAtMost(dp(480)).coerceAtLeast(dp(250))
+        val shell = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(Color.rgb(27, 39, 66), Color.rgb(10, 17, 31))
+            ).apply { cornerRadius = dp(18).toFloat(); setStroke(dp(2), accent) }
+            isFocusableInTouchMode = true
+        }
+        val headingRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        headingRow.addView(label(heading, 21f, true), LinearLayout.LayoutParams(0, -2, 1f))
+        headingRow.addView(button("✕") { closeSidePanel() })
+        shell.addView(headingRow)
+        val scroll = ScrollView(this)
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        scroll.addView(body)
+        shell.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        frame.addView(shell, FrameLayout.LayoutParams(panelWidth, -1,
+            if (left) Gravity.START else Gravity.END))
+        sidePanel = shell
+        fill(body)
+        shell.requestFocus()
+        val focus = body.getChildAt(0)
+        if (focus != null) focus.requestFocus()
+    }
+
     private fun showChannelOverlay() {
-        val choices = items.filter { it.type == "tv" }
-        if (choices.isEmpty()) return
-        val groups = choices.map { it.group }.distinct().sorted()
-        val categoryNames = arrayOf(tr("Все каналы", "Alle Sender", "All channels")) + groups
-        AlertDialog.Builder(this)
-            .setTitle(tr("Категории", "Kategorien", "Categories"))
-            .setItems(categoryNames) { _, selected ->
-                val filtered = if (selected == 0) choices else choices.filter { it.group == groups[selected - 1] }
-                val names = filtered.map { it.title }.toTypedArray()
-                AlertDialog.Builder(this)
-                    .setTitle(tr("Выбрать канал", "Sender wählen", "Choose channel"))
-                    .setItems(names) { _, which -> play(filtered[which]) }
-                    .setNegativeButton(tr("Закрыть", "Schließen", "Close"), null)
-                    .show()
+        val all = items.filter { it.type == "tv" }
+        if (all.isEmpty()) { toast(tr("Нет каналов", "Keine Sender", "No channels")); return }
+        val channels = if (prefs.getBoolean("sort_channels_alpha", false))
+            all.sortedBy { it.title.lowercase(Locale.ROOT) } else all
+        val groups = channels.map { it.group.ifBlank { "Other" } }.distinct().sorted()
+        openPanel(false, tr("Каналы →", "Sender →", "Channels →")) { body ->
+            val categoryList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val channelList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            body.addView(categoryList)
+            body.addView(channelList)
+            fun display(group: String?) {
+                channelList.removeAllViews()
+                val filtered = channels.filter { group == null || it.group.ifBlank { "Other" } == group }
+                channelList.addView(label("${filtered.size} " + tr("каналов", "Sender", "channels"), 15f))
+                filtered.take(1500).forEach { entry ->
+                    val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                    row.addView(artwork(entry.logo, 65, 46))
+                    row.addView(button(entry.title) { play(entry) }, LinearLayout.LayoutParams(0, dp(54), 1f))
+                    channelList.addView(row)
+                }
             }
-            .setNegativeButton(tr("Закрыть", "Schließen", "Close"), null)
-            .show()
+            categoryList.addView(button(tr("Все каналы", "Alle Sender", "All channels")) { display(null) })
+            groups.forEach { group -> categoryList.addView(button(group) { display(group) }) }
+            display(currentEntry?.group)
+        }
+    }
+
+    private fun guideEntries(entry: Entry): List<Programme> {
+        val id = entry.epgId
+        val byId = epgSchedule[id]
+        if (!byId.isNullOrEmpty()) return byId.sortedBy { it.start }
+        val normalized = entry.title.trim().lowercase(Locale.ROOT)
+        val match = epgChannelNames.entries.firstOrNull { it.value.trim().lowercase(Locale.ROOT) == normalized }
+        return epgSchedule[match?.key].orEmpty().sortedBy { it.start }
     }
 
     private fun showSideGuide() {
         val entry = currentEntry ?: return
-        val title = epgNow[entry.epgId.ifBlank { entry.title }]
-        val info = if (title.isNullOrBlank())
-            tr("Телепрограмма пока недоступна", "Noch kein Programm verfügbar", "Guide not available yet")
-        else tr("Сейчас: ", "Jetzt: ", "Now: ") + title
-        AlertDialog.Builder(this)
-            .setTitle("→ " + entry.title)
-            .setMessage(info + "\n\n" + tr(
-                "Для запуска архива нужна поддержка Catch-up от провайдера.",
-                "Für Archivwiedergabe ist Catch-up vom Anbieter nötig.",
-                "Archive playback requires provider Catch-up support."))
-            .setPositiveButton(tr("Закрыть", "Schließen", "Close"), null)
-            .show()
+        val now = System.currentTimeMillis()
+        openPanel(true, tr("← Телепрограмма", "← Programm", "← TV guide")) { body ->
+            body.addView(label(entry.title, 19f, true))
+            val schedule = guideEntries(entry)
+            if (schedule.isEmpty()) {
+                body.addView(label(tr("Нет EPG для этого канала. Добавь XMLTV в настройках.",
+                    "Kein EPG für diesen Sender. XMLTV in Einstellungen hinzufügen.",
+                    "No EPG for this channel. Add XMLTV in settings.")))
+            }
+            val format = SimpleDateFormat("dd.MM HH:mm", Locale.getDefault())
+            schedule.filter { it.stop > now - 7L * 86400000 && it.start < now + 7L * 86400000 }
+                .take(400).forEach { programme ->
+                    val past = programme.stop < now
+                    val text = format.format(Date(programme.start)) + "  " + programme.title +
+                        if (past) "  ◷" else ""
+                    body.addView(button(text) {
+                        AlertDialog.Builder(this)
+                            .setTitle(programme.title)
+                            .setMessage(format.format(Date(programme.start)) + " – " +
+                                format.format(Date(programme.stop)) + "\n\n" + programme.description +
+                                if (past) "\n\n" + tr(
+                                    "Для воспроизведения записи требуется Catch-up провайдера.",
+                                    "Zur Wiedergabe ist Anbieter-Catch-up erforderlich.",
+                                    "Playback requires provider Catch-up support.") else "")
+                            .setPositiveButton("OK", null).show()
+                    })
+                }
+        }
     }
 
     private fun loadVodPlaylist() {
@@ -1102,6 +1176,19 @@ class MainActivity : Activity() {
             )
         }
 
+        content.addView(button(tr("Цветовая тема", "Farbschema", "Color theme")) {
+            val names = arrayOf(tr("Синяя", "Blau", "Blue"), tr("Красная", "Rot", "Red"),
+                tr("Зелёная", "Grün", "Green"), tr("Фиолетовая", "Lila", "Purple"),
+                tr("Золотая", "Gold", "Gold"))
+            val ids = arrayOf("blue", "red", "green", "purple", "gold")
+            AlertDialog.Builder(this).setTitle(tr("Оформление", "Design", "Appearance"))
+                .setItems(names) { _, index ->
+                    prefs.edit().putString("theme", ids[index]).apply()
+                    showSettings()
+                }.show()
+        })
+        content.addView(button(tr("Видеотека (отдельно от ТВ)", "Mediathek (getrennt vom TV)",
+            "Video library (separate from TV)")) { showCatalog("movies") })
         content.addView(
             button(
                 tr(
@@ -1278,12 +1365,14 @@ class MainActivity : Activity() {
 
     private fun loadEpg() {
         val address = prefs.getString("epg_url", "").orEmpty()
-        if (address.isBlank()) return
+        if (!address.startsWith("https://") && !address.startsWith("http://")) return
         thread {
             try {
                 val conn = URL(address).openConnection() as HttpURLConnection
-                conn.connectTimeout = 15000; conn.readTimeout = 30000
-                val result = mutableMapOf<String, String>()
+                conn.connectTimeout = 15000; conn.readTimeout = 45000
+                val schedule = mutableMapOf<String, MutableList<Programme>>()
+                val names = mutableMapOf<String, String>()
+                val currentTitles = mutableMapOf<String, String>()
                 val now = System.currentTimeMillis()
                 try {
                     val factory = javax.xml.parsers.SAXParserFactory.newInstance()
@@ -1291,36 +1380,64 @@ class MainActivity : Activity() {
                     factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
                     factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
                     val parser = factory.newSAXParser()
-                    val source = if (address.lowercase().endsWith(".gz") || conn.contentEncoding.equals("gzip", true))
-                        java.util.zip.GZIPInputStream(conn.inputStream) else conn.inputStream
-                    parser.parse(source, object : org.xml.sax.helpers.DefaultHandler() {
-                        var channel = ""; var start = 0L; var stop = 0L
-                        var insideTitle = false; val title = StringBuilder()
-                        fun xmlTime(value: String): Long {
-                            val compact = value.trim().take(14)
-                            return try {
-                                val fmt = java.text.SimpleDateFormat("yyyyMMddHHmmss", java.util.Locale.US)
-                                val offset = value.trim().substringAfter(' ', "+0000")
-                                fmt.timeZone = java.util.TimeZone.getTimeZone("GMT$offset")
-                                fmt.parse(compact)?.time ?: 0L
-                            } catch (_: Exception) { 0L }
-                        }
-                        override fun startElement(uri: String?, localName: String?, qName: String?, attrs: org.xml.sax.Attributes) {
-                            when (qName) {
-                                "programme" -> { channel = attrs.getValue("channel") ?: ""; start = xmlTime(attrs.getValue("start") ?: ""); stop = xmlTime(attrs.getValue("stop") ?: "") }
-                                "title" -> { insideTitle = true; title.setLength(0) }
+                    val raw = conn.inputStream
+                    val source = if (address.substringBefore('?').lowercase(Locale.ROOT).endsWith(".gz") ||
+                        conn.contentEncoding.equals("gzip", true)) java.util.zip.GZIPInputStream(raw) else raw
+                    source.use { input ->
+                        parser.parse(input, object : org.xml.sax.helpers.DefaultHandler() {
+                            var channel = ""; var start = 0L; var stop = 0L
+                            var channelId = ""; var title = ""; var description = ""
+                            var field = ""; val chars = StringBuilder()
+                            fun xmlTime(value: String): Long {
+                                return try {
+                                    val rawTime = value.trim()
+                                    val fmt = SimpleDateFormat("yyyyMMddHHmmss", Locale.US)
+                                    val offset = rawTime.substringAfter(' ', "+0000")
+                                    fmt.timeZone = java.util.TimeZone.getTimeZone("GMT$offset")
+                                    fmt.parse(rawTime.take(14))?.time ?: 0L
+                                } catch (_: Exception) { 0L }
                             }
-                        }
-                        override fun characters(ch: CharArray, startIndex: Int, length: Int) {
-                            if (insideTitle) title.append(ch, startIndex, length)
-                        }
-                        override fun endElement(uri: String?, localName: String?, qName: String?) {
-                            if (qName == "title") insideTitle = false
-                            if (qName == "programme" && now in start until stop && channel.isNotBlank()) result[channel] = title.toString()
-                        }
-                    })
+                            override fun startElement(uri: String?, localName: String?, qName: String?, attrs: org.xml.sax.Attributes) {
+                                when (qName) {
+                                    "channel" -> channelId = attrs.getValue("id") ?: ""
+                                    "programme" -> {
+                                        channel = attrs.getValue("channel") ?: ""
+                                        start = xmlTime(attrs.getValue("start") ?: "")
+                                        stop = xmlTime(attrs.getValue("stop") ?: "")
+                                        title = ""; description = ""
+                                    }
+                                    "title", "desc", "display-name" -> { field = qName; chars.setLength(0) }
+                                }
+                            }
+                            override fun characters(ch: CharArray, index: Int, length: Int) {
+                                if (field.isNotEmpty()) chars.append(ch, index, length)
+                            }
+                            override fun endElement(uri: String?, localName: String?, qName: String?) {
+                                if (qName == field) {
+                                    when (field) {
+                                        "title" -> title = chars.toString().trim()
+                                        "desc" -> description = chars.toString().trim()
+                                        "display-name" -> if (channelId.isNotBlank() && !names.containsKey(channelId)) names[channelId] = chars.toString().trim()
+                                    }
+                                    field = ""
+                                }
+                                if (qName == "programme" && channel.isNotBlank() && start > 0L && stop > start &&
+                                    stop > now - 7L * 86400000 && start < now + 7L * 86400000) {
+                                    val programmes = schedule.getOrPut(channel) { mutableListOf() }
+                                    if (programmes.size < 800) programmes.add(Programme(channel, start, stop, title, description))
+                                    if (now in start until stop) currentTitles[channel] = title
+                                }
+                                if (qName == "channel") channelId = ""
+                            }
+                        })
+                    }
                 } finally { conn.disconnect() }
-                runOnUiThread { epgNow.clear(); epgNow.putAll(result); if (current == "tv") showCatalog("tv") }
+                runOnUiThread {
+                    epgSchedule.clear(); epgSchedule.putAll(schedule)
+                    epgChannelNames.clear(); epgChannelNames.putAll(names)
+                    epgNow.clear(); epgNow.putAll(currentTitles)
+                    if (current == "tv") showCatalog("tv")
+                }
             } catch (e: Exception) { runOnUiThread { toast("EPG: ${e.message}") } }
         }
     }
@@ -1404,18 +1521,18 @@ class MainActivity : Activity() {
             val matrix = MultiFormatWriter().encode(
                 url,
                 BarcodeFormat.QR_CODE,
-                420,
-                420
+                240,
+                240
             )
 
             val bitmap = Bitmap.createBitmap(
-                420,
-                420,
+                240,
+                240,
                 Bitmap.Config.ARGB_8888
             )
 
-            for (y in 0 until 420) {
-                for (x in 0 until 420) {
+            for (y in 0 until 240) {
+                for (x in 0 until 240) {
                     bitmap.setPixel(
                         x,
                         y,
@@ -1430,7 +1547,7 @@ class MainActivity : Activity() {
 
             content.addView(
                 image,
-                LinearLayout.LayoutParams(-1, dp(420))
+                LinearLayout.LayoutParams(dp(240), dp(240)).apply { gravity = Gravity.CENTER_HORIZONTAL }
             )
 
         } catch (e: Exception) {
@@ -1662,6 +1779,10 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        if (current == "player" && sidePanel != null) {
+            closeSidePanel()
+            return
+        }
         if (current == "player") {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             player?.pause()
