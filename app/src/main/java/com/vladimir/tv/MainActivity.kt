@@ -565,7 +565,11 @@ class MainActivity : Activity() {
             return
         }
 
-        val groups = candidates.map { it.group }
+        val orderedCandidates = if (type == "tv" && prefs.getBoolean("sort_channels_alpha", false))
+            candidates.sortedBy { it.title.lowercase(Locale.ROOT) }
+        else candidates
+
+        val groups = orderedCandidates.map { it.group }
             .distinct()
             .sorted()
 
@@ -596,7 +600,7 @@ class MainActivity : Activity() {
         fun fill(group: String) {
             list.removeAllViews()
 
-            candidates
+            orderedCandidates
                 .filter {
                     group.isEmpty() || it.group == group
                 }
@@ -609,7 +613,10 @@ class MainActivity : Activity() {
 
                     row.gravity = Gravity.CENTER_VERTICAL
                     if (prefs.getBoolean("show_artwork", true)) {
-                        row.addView(artwork(entry.logo, if (type == "movies") 66 else 78, if (type == "movies") 94 else 58))
+                        val mode = if (type == "tv") prefs.getInt("channel_layout", 0) else 0
+                        val logoWidth = when (mode) { 1 -> 144; 2 -> 52; else -> if (type == "movies") 66 else 78 }
+                        val logoHeight = when (mode) { 1 -> 96; 2 -> 42; else -> if (type == "movies") 94 else 58 }
+                        row.addView(artwork(entry.logo, logoWidth, logoHeight))
                     }
                     val guide = epgNow[entry.epgId.ifBlank { entry.title }] ?: ""
                     row.addView(
@@ -938,6 +945,8 @@ class MainActivity : Activity() {
                 when (keyCode) {
                     KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
                     KeyEvent.KEYCODE_MENU -> { showChannelOverlay(); true }
+                    KeyEvent.KEYCODE_DPAD_LEFT -> { showChannelOverlay(); true }
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> { showSideGuide(); true }
                     KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_MEDIA_NEXT -> { changeChannel(1); true }
                     KeyEvent.KEYCODE_CHANNEL_DOWN, KeyEvent.KEYCODE_MEDIA_PREVIOUS -> { changeChannel(-1); true }
                     else -> false
@@ -990,6 +999,22 @@ class MainActivity : Activity() {
                     .show()
             }
             .setNegativeButton(tr("Закрыть", "Schließen", "Close"), null)
+            .show()
+    }
+
+    private fun showSideGuide() {
+        val entry = currentEntry ?: return
+        val title = epgNow[entry.epgId.ifBlank { entry.title }]
+        val info = if (title.isNullOrBlank())
+            tr("Телепрограмма пока недоступна", "Noch kein Programm verfügbar", "Guide not available yet")
+        else tr("Сейчас: ", "Jetzt: ", "Now: ") + title
+        AlertDialog.Builder(this)
+            .setTitle("→ " + entry.title)
+            .setMessage(info + "\n\n" + tr(
+                "Для запуска архива нужна поддержка Catch-up от провайдера.",
+                "Für Archivwiedergabe ist Catch-up vom Anbieter nötig.",
+                "Archive playback requires provider Catch-up support."))
+            .setPositiveButton(tr("Закрыть", "Schließen", "Close"), null)
             .show()
     }
 
@@ -1089,6 +1114,28 @@ class MainActivity : Activity() {
             }
         )
 
+        content.addView(button(tr("Размер логотипов: обычные / крупные / компактные",
+            "Logogröße: normal / groß / kompakt",
+            "Logo size: normal / large / compact")) {
+            val labels = arrayOf(tr("Список", "Liste", "List"),
+                tr("Крупные логотипы", "Große Logos", "Large logos"),
+                tr("Компактные логотипы", "Kompakte Logos", "Compact logos"))
+            AlertDialog.Builder(this)
+                .setTitle(tr("Вид каналов", "Senderansicht", "Channel view"))
+                .setSingleChoiceItems(labels, prefs.getInt("channel_layout", 0)) { dialog, index ->
+                    prefs.edit().putInt("channel_layout", index).apply()
+                    dialog.dismiss()
+                    toast(tr("Вид сохранён", "Ansicht gespeichert", "Layout saved"))
+                }.setNegativeButton(tr("Отмена", "Abbrechen", "Cancel"), null).show()
+        })
+        content.addView(button(tr("Сортировка каналов: плейлист / по алфавиту",
+            "Sender sortieren: Playlist / Alphabet",
+            "Channel sorting: playlist / alphabetical")) {
+            val alphabetical = !prefs.getBoolean("sort_channels_alpha", false)
+            prefs.edit().putBoolean("sort_channels_alpha", alphabetical).apply()
+            toast(if (alphabetical) tr("По алфавиту", "Alphabetisch", "Alphabetical")
+                else tr("Порядок плейлиста", "Playlist-Reihenfolge", "Playlist order"))
+        })
         content.addView(button(tr("Xtream Codes: сервер и доступ", "Xtream Codes: Server und Zugang", "Xtream Codes: server and login")) { editXtream() })
         content.addView(button(tr("EPG: адрес XMLTV", "EPG: XMLTV-Adresse", "EPG: XMLTV URL")) { editEpg() })
         content.addView(button(tr("Обновить ТВ и видеотеку", "TV und Mediathek aktualisieren", "Refresh TV and library")) {
